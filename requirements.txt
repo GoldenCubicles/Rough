@@ -1,8 +1,22 @@
+# Build helpers (ensure prebuilt wheels are used)
+pip>=25.2
+setuptools>=70.0
+wheel
+
+# UI frameworks
 gradio==4.44.0
-deep-translator==1.11.4
-python-dotenv==1.0.0
-requests==2.31.0
-fastapi==0.104.1
-uvicorn==0.24.0
 streamlit==1.28.1
-pydantic==2.5.0 
+
+# API server and schema
+fastapi==0.104.1
+pydantic==2.5.0
+pydantic-core==2.14.3
+uvicorn==0.24.0
+
+# Translation and utilities
+deep-translator==1.11.4
+requests==2.31.0
+python-dotenv==1.0.0
+
+# Compatibility helpers
+typing-extensions>=4.8.0
