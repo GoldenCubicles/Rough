@@ -1,3 +1,4 @@
+--only-binary=:all:
 # Build helpers (ensure prebuilt wheels are used)
 pip>=25.2
 setuptools>=70.0
