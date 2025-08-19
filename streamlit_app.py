@@ -6,7 +6,9 @@ from typing import Optional
 import os
 
 # Configuration
-API_BASE_URL = os.getenv("API_BASE_URL", "http://localhost:8000")
+API_BASE_URL = "https://rough-1-8qyx.onrender.com"
+
+# API_BASE_URL = os.getenv("API_BASE_URL", "https://rough-1-8qyx.onrender.com/")
 
 # Page configuration
 st.set_page_config(
