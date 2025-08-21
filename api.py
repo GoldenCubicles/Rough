@@ -82,12 +82,29 @@ def translate_with_retry(text: str, source_code: str, target_code: str, max_retr
         try:
             rate_limit()  # Apply rate limiting
             
+            logger.info(f"Attempt {attempt + 1}: Translating '{text[:50]}...' from {source_code} to {target_code}")
+            
             translator = GoogleTranslator(source=source_code, target=target_code)
             result = translator.translate(text)
-            return result
+            
+            # Verify we got a proper translation
+            if result and result.strip() and result.strip() != text.strip():
+                logger.info(f"Translation successful: '{text[:30]}...' -> '{result[:30]}...'")
+                return result
+            else:
+                logger.warning(f"Attempt {attempt + 1}: Translation returned empty or same text")
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1
+                    logger.info(f"Waiting {wait_time}s before retry...")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception("Translation failed: returned same text after all retries")
             
         except Exception as e:
             error_msg = str(e).lower()
+            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
+            
             if "too many requests" in error_msg or "rate limit" in error_msg:
                 if attempt < max_retries - 1:
                     wait_time = (2 ** attempt) + 1  # Exponential backoff
@@ -97,7 +114,13 @@ def translate_with_retry(text: str, source_code: str, target_code: str, max_retr
                 else:
                     raise Exception("Rate limit exceeded after multiple retries. Please try again later.")
             else:
-                raise e
+                if attempt < max_retries - 1:
+                    wait_time = (2 ** attempt) + 1
+                    logger.warning(f"Translation error, waiting {wait_time}s before retry {attempt + 1}")
+                    time.sleep(wait_time)
+                    continue
+                else:
+                    raise Exception(f"Translation failed after {max_retries} attempts: {str(e)}")
     
     raise Exception("Translation failed after multiple attempts")
 
@@ -148,16 +171,30 @@ def translate_long_text(text: str, source_code: str, target_code: str) -> str:
         try:
             logger.info(f"Translating chunk {i+1}/{len(chunks)} (length: {len(chunk)})")
             translated_chunk = translate_with_retry(chunk, source_code, target_code)
-            translated_chunks.append(translated_chunk)
+            
+            # Verify that we actually got a translation, not the original text
+            if translated_chunk and translated_chunk.strip() != chunk.strip():
+                translated_chunks.append(translated_chunk)
+                logger.info(f"Chunk {i+1} translated successfully: '{chunk[:50]}...' -> '{translated_chunk[:50]}...'")
+            else:
+                logger.warning(f"Chunk {i+1} returned same text, retrying...")
+                # Try one more time with a different approach
+                time.sleep(0.5)
+                retry_chunk = translate_with_retry(chunk, source_code, target_code)
+                if retry_chunk and retry_chunk.strip() != chunk.strip():
+                    translated_chunks.append(retry_chunk)
+                    logger.info(f"Chunk {i+1} retry successful")
+                else:
+                    raise Exception(f"Failed to translate chunk {i+1}: returned same text")
             
             # Small delay between chunks to be extra safe with rate limiting
             if i < len(chunks) - 1:
-                time.sleep(0.2)
+                time.sleep(0.3)
                 
         except Exception as e:
             logger.error(f"Failed to translate chunk {i+1}: {str(e)}")
-            # If a chunk fails, return the original text for that chunk
-            translated_chunks.append(chunk)
+            # Don't return original text on failure - raise the exception
+            raise Exception(f"Translation failed for chunk {i+1}: {str(e)}")
     
     # Join the translated chunks
     return ' '.join(translated_chunks)
@@ -381,6 +418,35 @@ async def rate_limit_status():
             "our_limit": "4 req/sec (staying under Google's 5 req/sec limit)"
         }
     }
+
+@app.get("/test-translation")
+async def test_translation():
+    """Test endpoint to verify translation is working."""
+    try:
+        # Test with a simple translation
+        test_text = "Hello world"
+        result = translate_with_retry(test_text, "en", "es")
+        
+        if result and result != test_text:
+            return {
+                "status": "healthy",
+                "test_text": test_text,
+                "translated_text": result,
+                "message": "Translation is working correctly"
+            }
+        else:
+            return {
+                "status": "unhealthy",
+                "test_text": test_text,
+                "translated_text": result,
+                "message": "Translation returned same text - not working"
+            }
+    except Exception as e:
+        return {
+            "status": "unhealthy",
+            "error": str(e),
+            "message": "Translation test failed"
+        }
 
 if __name__ == "__main__":
     import os
