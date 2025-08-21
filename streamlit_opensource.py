@@ -341,7 +341,7 @@ def main():
                             st.info(f"🔍 **Auto-detected language:** {result['detected_language']}")
                         
                         service_badge = get_service_badge_html(result.get("service_used"))
-                        st.success(f"✅ Translation completed successfully! {service_badge}", unsafe_allow_html=True)
+                        st.markdown(f'<div class="success-box">✅ Translation completed successfully! {service_badge}</div>', unsafe_allow_html=True)
                         
                         # Show which service was used
                         st.info(f"🔧 **Translation Service:** {result.get('service_used', 'Unknown').title()}")
@@ -418,7 +418,7 @@ def main():
                         for i, translation in enumerate(translations):
                             if translation.get("success"):
                                 service_badge = get_service_badge_html(translation.get("service_used"))
-                                st.success(f"✅ **Text {i+1}:** {translation['translated_text']} {service_badge}", unsafe_allow_html=True)
+                                st.markdown(f'<div class="success-box">✅ <strong>Text {i+1}:</strong> {translation["translated_text"]} {service_badge}</div>', unsafe_allow_html=True)
                             else:
                                 st.error(f"❌ **Text {i+1}:** {translation.get('message', 'Translation failed')}")
                         

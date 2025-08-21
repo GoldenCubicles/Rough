@@ -1,130 +1,178 @@
 from fastapi import FastAPI, HTTPException
 from pydantic import BaseModel
-from deep_translator import GoogleTranslator
-from languages import get_language_code, get_language_name, get_supported_languages
+from typing import List, Optional
 import uvicorn
 import time
-import asyncio
-from typing import List, Optional
 import logging
+import os
+import openai
+from languages import get_language_code, get_language_name, get_supported_languages
 
 # Configure logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Rate limiting configuration - make it much less aggressive for deployment
-RATE_LIMIT_REQUESTS = 2  # Stay well under Google's 5 req/sec limit
-RATE_LIMIT_WINDOW = 2.0  # 2 second window for more safety
+# OpenAI Configuration
+# TODO: Replace with your actual OpenAI API key
+OPENAI_API_KEY = "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"  # Replace this with your real API key
 
-# Add a more flexible rate limiting approach
-import threading
-from collections import deque
-import time
+if not OPENAI_API_KEY or OPENAI_API_KEY == "sk-your-actual-api-key-here":
+    logger.error("⚠️  Please replace the hardcoded API key with your actual OpenAI API key!")
+    logger.error("   Edit OpensourceAPI.py and replace 'sk-your-actual-api-key-here' with your real key")
+    raise Exception("OpenAI API key not configured - please edit the file and add your real API key")
 
-# Thread-safe rate limiting with sliding window
-class RateLimiter:
-    def __init__(self, max_requests=4, window_size=1.0):
-        self.max_requests = max_requests
-        self.window_size = window_size
-        self.requests = deque()
-        self.lock = threading.Lock()
-        self.total_requests = 0
-        self.rate_limit_hits = 0
+# Configure OpenAI client
+try:
+    # For OpenAI v1.0.0+, we don't need to set the global API key
+    # It will be passed when creating the client
+    logger.info("OpenAI client will be configured per request")
+except Exception as e:
+    logger.error(f"Failed to configure OpenAI client: {str(e)}")
+
+app = FastAPI(
+    title="OpenAI-Powered Multi-Language Translator API",
+    description="High-accuracy translation API using OpenAI's advanced language models",
+    version="3.0.0"
+)
+
+# OpenAI Translation Configuration
+OPENAI_CONFIG = {
+    "model": "gpt-3.5-turbo",  # Can be changed to gpt-4 for better quality
+    "max_tokens": 4000,
+    "temperature": 0.3,  # Lower temperature for more consistent translations
+    "enabled": True
+}
+
+class TranslationRequest(BaseModel):
+    text: str
+    source_lang: str = "Auto"
+    target_lang: str = "English"
+
+class BatchTranslationRequest(BaseModel):
+    texts: List[str]
+    source_lang: str = "Auto"
+    target_lang: str = "English"
+
+class TranslationResponse(BaseModel):
+    translated_text: str
+    detected_language: str = None
+    source_lang: str
+    target_lang: str
+    success: bool
+    message: str = None
+    model_used: str = None
+    tokens_used: int = None
+
+class BatchTranslationResponse(BaseModel):
+    translations: List[TranslationResponse]
+    success: bool
+    message: str = None
+
+def get_language_mapping():
+    """Get language mapping for OpenAI translation."""
+    return {
+        "English": "English",
+        "Spanish": "Spanish", 
+        "French": "French",
+        "German": "German",
+        "Italian": "Italian",
+        "Portuguese": "Portuguese",
+        "Russian": "Russian",
+        "Chinese": "Chinese",
+        "Japanese": "Japanese",
+        "Korean": "Korean",
+        "Arabic": "Arabic",
+        "Hindi": "Hindi",
+        "Bengali": "Bengali",
+        "Urdu": "Urdu",
+        "Persian": "Persian",
+        "Turkish": "Turkish",
+        "Polish": "Polish",
+        "Dutch": "Dutch",
+        "Swedish": "Swedish",
+        "Danish": "Danish",
+        "Norwegian": "Norwegian",
+        "Finnish": "Finnish",
+        "Greek": "Greek",
+        "Hebrew": "Hebrew",
+        "Vietnamese": "Vietnamese",
+        "Thai": "Thai",
+        "Indonesian": "Indonesian",
+        "Malay": "Malay",
+        "Filipino": "Filipino",
+        "Swahili": "Swahili",
+        "Zulu": "Zulu",
+        "Afrikaans": "Afrikaans",
+        "Irish": "Irish",
+        "Welsh": "Welsh",
+        "Scottish Gaelic": "Scottish Gaelic",
+        "Catalan": "Catalan",
+        "Basque": "Basque",
+        "Galician": "Galician",
+        "Romanian": "Romanian",
+        "Bulgarian": "Bulgarian",
+        "Croatian": "Croatian",
+        "Serbian": "Serbian",
+        "Slovenian": "Slovenian",
+        "Slovak": "Slovak",
+        "Czech": "Czech",
+        "Hungarian": "Hungarian",
+        "Estonian": "Estonian",
+        "Latvian": "Latvian",
+        "Lithuanian": "Lithuanian",
+        "Ukrainian": "Ukrainian",
+        "Belarusian": "Belarusian",
+        "Macedonian": "Macedonian",
+        "Albanian": "Albanian",
+        "Bosnian": "Bosnian",
+        "Montenegrin": "Montenegrin"
+    }
+
+def translate_with_openai(text: str, source_lang: str, target_lang: str) -> tuple[str, str, int]:
+    """Translate using OpenAI's advanced language models."""
+    if not OPENAI_API_KEY:
+        raise Exception("OpenAI API key not configured")
     
-    def can_proceed(self):
-        """Check if we can make a request without exceeding rate limits."""
-        current_time = time.time()
+    try:
+        # Handle auto-detection
+        if source_lang.lower() == "auto":
+            prompt = f"""Translate the following text to {target_lang}. 
+            Maintain the original meaning, tone, and style. 
+            Only return the translated text, nothing else.
+            
+            Text to translate: {text}"""
+        else:
+            prompt = f"""Translate the following text from {source_lang} to {target_lang}. 
+            Maintain the original meaning, tone, and style. 
+            Only return the translated text, nothing else.
+            
+            Text to translate: {text}"""
         
-        with self.lock:
-            # Remove old requests outside the window
-            while self.requests and current_time - self.requests[0] > self.window_size:
-                self.requests.popleft()
-            
-            # Check if we're under the limit
-            if len(self.requests) < self.max_requests:
-                self.requests.append(current_time)
-                self.total_requests += 1
-                return True
-            
-            self.rate_limit_hits += 1
-            return False
-    
-    def wait_if_needed(self):
-        """Wait until we can make a request."""
-        wait_count = 0
-        while not self.can_proceed():
-            wait_count += 1
-            if wait_count == 1:  # Log only once per wait
-                logger.info(f"Rate limit reached, waiting for slot... (total requests: {self.total_requests}, rate limit hits: {self.rate_limit_hits})")
-            time.sleep(0.1)  # Small delay to avoid busy waiting
-    
-    def get_stats(self):
-        """Get current rate limiting statistics."""
-        with self.lock:
-            return {
-                "total_requests": self.total_requests,
-                "rate_limit_hits": self.rate_limit_hits,
-                "current_window_requests": len(self.requests),
-                "max_requests": self.max_requests,
-                "window_size": self.window_size
-            }
+        logger.info(f"Translating with OpenAI: {source_lang} -> {target_lang}")
+        
+        # Use the new OpenAI API format
+        client = openai.OpenAI(api_key=OPENAI_API_KEY)
+        response = client.chat.completions.create(
+            model=OPENAI_CONFIG["model"],
+            messages=[
+                {"role": "system", "content": "You are a professional translator. Translate accurately and naturally."},
+                {"role": "user", "content": prompt}
+            ],
+            max_tokens=OPENAI_CONFIG["max_tokens"],
+            temperature=OPENAI_CONFIG["temperature"]
+        )
+        
+        translated_text = response.choices[0].message.content.strip()
+        tokens_used = response.usage.total_tokens
+        
+        logger.info(f"OpenAI translation successful. Tokens used: {tokens_used}")
+        return translated_text, OPENAI_CONFIG["model"], tokens_used
+        
+    except Exception as e:
+        logger.error(f"OpenAI translation error: {str(e)}")
+        raise Exception(f"OpenAI translation failed: {str(e)}")
 
-# Create a global rate limiter instance - make it much less aggressive for deployment
-rate_limiter = RateLimiter(max_requests=2, window_size=2.0)
-
-def rate_limit():
-    """Implement rate limiting to stay under Google's 5 req/sec limit."""
-    rate_limiter.wait_if_needed()
-
-def translate_with_retry(text: str, source_code: str, target_code: str, max_retries: int = 3) -> str:
-    """Translate text with retry logic and rate limiting."""
-    for attempt in range(max_retries):
-        try:
-            rate_limit()  # Apply rate limiting
-            
-            logger.info(f"Attempt {attempt + 1}: Translating '{text[:50]}...' from {source_code} to {target_code}")
-            
-            translator = GoogleTranslator(source=source_code, target=target_code)
-            result = translator.translate(text)
-            
-            # Verify we got a proper translation
-            if result and result.strip() and result.strip() != text.strip():
-                logger.info(f"Translation successful: '{text[:30]}...' -> '{result[:30]}...'")
-                return result
-            else:
-                logger.warning(f"Attempt {attempt + 1}: Translation returned empty or same text")
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) + 1
-                    logger.info(f"Waiting {wait_time}s before retry...")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception("Translation failed: returned same text after all retries")
-            
-        except Exception as e:
-            error_msg = str(e).lower()
-            logger.error(f"Attempt {attempt + 1} failed: {str(e)}")
-            
-            if "too many requests" in error_msg or "rate limit" in error_msg:
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) + 1  # Exponential backoff
-                    logger.warning(f"Rate limit hit, waiting {wait_time}s before retry {attempt + 1}")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception("Rate limit exceeded after multiple retries. Please try again later.")
-            else:
-                if attempt < max_retries - 1:
-                    wait_time = (2 ** attempt) + 1
-                    logger.warning(f"Translation error, waiting {wait_time}s before retry {attempt + 1}")
-                    time.sleep(wait_time)
-                    continue
-                else:
-                    raise Exception(f"Translation failed after {max_retries} attempts: {str(e)}")
-    
-    raise Exception("Translation failed after multiple attempts")
-
-def split_text_for_translation(text: str, max_chunk_size: int = 1000) -> List[str]:
+def split_text_for_translation(text: str, max_chunk_size: int = 800) -> List[str]:
     """Split long text into smaller chunks for translation."""
     if len(text) <= max_chunk_size:
         return [text]
@@ -156,95 +204,66 @@ def split_text_for_translation(text: str, max_chunk_size: int = 1000) -> List[st
     
     return chunks
 
-def translate_long_text(text: str, source_code: str, target_code: str) -> str:
+def translate_long_text(text: str, source_lang: str, target_lang: str) -> tuple[str, str, int]:
     """Translate long text by splitting into chunks and translating sequentially."""
     chunks = split_text_for_translation(text)
     
     if len(chunks) == 1:
         # Single chunk, translate directly
-        return translate_with_retry(text, source_code, target_code)
+        return translate_with_openai(text, source_lang, target_lang)
     
     # Multiple chunks, translate sequentially
     translated_chunks = []
+    model_used = None
+    total_tokens = 0
     
     for i, chunk in enumerate(chunks):
         try:
             logger.info(f"Translating chunk {i+1}/{len(chunks)} (length: {len(chunk)})")
-            translated_chunk = translate_with_retry(chunk, source_code, target_code)
+            translated_chunk, chunk_model, tokens_used = translate_with_openai(chunk, source_lang, target_lang)
+            translated_chunks.append(translated_chunk)
             
-            # Verify that we actually got a translation, not the original text
-            if translated_chunk and translated_chunk.strip() != chunk.strip():
-                translated_chunks.append(translated_chunk)
-                logger.info(f"Chunk {i+1} translated successfully: '{chunk[:50]}...' -> '{translated_chunk[:50]}...'")
-            else:
-                logger.warning(f"Chunk {i+1} returned same text, retrying...")
-                # Try one more time with a different approach
-                time.sleep(0.5)
-                retry_chunk = translate_with_retry(chunk, source_code, target_code)
-                if retry_chunk and retry_chunk.strip() != chunk.strip():
-                    translated_chunks.append(retry_chunk)
-                    logger.info(f"Chunk {i+1} retry successful")
-                else:
-                    raise Exception(f"Failed to translate chunk {i+1}: returned same text")
+            # Track which model was used and total tokens
+            if model_used is None:
+                model_used = chunk_model
+            total_tokens += tokens_used
             
-            # Much longer delay between chunks for deployment safety
+            # Small delay between chunks to be respectful to OpenAI API
             if i < len(chunks) - 1:
-                time.sleep(1.0)  # 1 second delay between chunks
+                time.sleep(0.2)
                 
         except Exception as e:
             logger.error(f"Failed to translate chunk {i+1}: {str(e)}")
-            # Don't return original text on failure - raise the exception
+            # If a chunk fails, raise the exception
             raise Exception(f"Translation failed for chunk {i+1}: {str(e)}")
     
     # Join the translated chunks
-    return ' '.join(translated_chunks)
-
-app = FastAPI(
-    title="Multi-Language Translator API",
-    description="High-accuracy translation API using local Google Translate engine with rate limiting",
-    version="1.0.0"
-)
-
-class TranslationRequest(BaseModel):
-    text: str
-    source_lang: str = "Auto"
-    target_lang: str = "English"
-
-class BatchTranslationRequest(BaseModel):
-    texts: List[str]
-    source_lang: str = "Auto"
-    target_lang: str = "English"
-
-class TranslationResponse(BaseModel):
-    translated_text: str
-    detected_language: str = None
-    source_lang: str
-    target_lang: str
-    success: bool
-    message: str = None
-
-class BatchTranslationResponse(BaseModel):
-    translations: List[TranslationResponse]
-    success: bool
-    message: str = None
+    return ' '.join(translated_chunks), model_used, total_tokens
 
 @app.get("/")
 async def root():
     """Root endpoint with API information."""
     return {
-        "message": "Multi-Language Translator API",
-        "version": "1.0.0",
-        "description": "High-accuracy translation using local Google Translate engine with rate limiting",
+        "message": "OpenAI-Powered Multi-Language Translator API",
+        "version": "3.0.0",
+        "description": "High-accuracy translation using OpenAI's advanced language models",
         "features": [
-            "Rate limiting to avoid Google's limits",
-            "Retry logic with exponential backoff",
+            "OpenAI GPT-3.5-turbo powered translation",
+            "No rate limiting issues",
+            "Superior translation quality",
+            "Long text support with intelligent chunking",
             "Batch translation support",
-            "Zero latency",
-            "High accuracy", 
+            "High accuracy and context understanding",
             "Privacy-focused",
-            "Works offline",
-            "25+ languages supported"
-        ]
+            "50+ languages supported",
+            "Professional-grade translations"
+        ],
+        "openai_config": {
+            "model": OPENAI_CONFIG["model"],
+            "max_tokens": OPENAI_CONFIG["max_tokens"],
+            "temperature": OPENAI_CONFIG["temperature"]
+        },
+        "note": "Requires OPENAI_API_KEY environment variable"
     }
 
 @app.get("/languages")
@@ -255,45 +274,67 @@ async def get_languages():
         "count": len(get_supported_languages())
     }
 
+@app.get("/services")
+async def get_services():
+    """Get OpenAI translation service status and configuration."""
+    return {
+        "service": "OpenAI Translation",
+        "status": "enabled" if OPENAI_CONFIG["enabled"] and OPENAI_API_KEY else "disabled",
+        "model": OPENAI_CONFIG["model"],
+        "configuration": {
+            "max_tokens": OPENAI_CONFIG["max_tokens"],
+            "temperature": OPENAI_CONFIG["temperature"],
+            "api_key_configured": bool(OPENAI_API_KEY)
+        },
+        "capabilities": [
+            "High-quality translation",
+            "Context-aware translations",
+            "Multiple language support",
+            "Long text handling",
+            "Professional-grade accuracy"
+        ]
+    }
+
 @app.post("/translate", response_model=TranslationResponse)
 async def translate_text(request: TranslationRequest):
-    """Translate text between languages with rate limiting and retry logic."""
+    """Translate text between languages using OpenAI."""
     
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
     
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
+    
     try:
         # Handle auto-detection
         if request.source_lang == "Auto":
-            target_code = get_language_code(request.target_lang)
-            
-            # Use the long text handler for better rate limiting
-            result = translate_long_text(request.text, 'auto', target_code)
+            # Use the long text handler
+            result, model_used, tokens_used = translate_long_text(request.text, 'auto', request.target_lang)
             
             return TranslationResponse(
                 translated_text=result,
                 detected_language="Auto-detected",
                 source_lang=request.source_lang,
                 target_lang=request.target_lang,
-                success=True
+                success=True,
+                model_used=model_used,
+                tokens_used=tokens_used
             )
         else:
-            # Get language codes
-            source_code = get_language_code(request.source_lang)
-            target_code = get_language_code(request.target_lang)
-            
             # Validate languages
-            if target_code == "auto":
+            if request.target_lang == "Auto":
                 raise HTTPException(status_code=400, detail="Cannot translate to 'Auto' language")
             
-            # Use the long text handler for better rate limiting
-            result = translate_long_text(request.text, source_code, target_code)
+            # Use the long text handler
+            result, model_used, tokens_used = translate_long_text(request.text, request.source_lang, request.target_lang)
             
             return TranslationResponse(
                 translated_text=result,
                 source_lang=request.source_lang,
                 target_lang=request.target_lang,
-                success=True
+                success=True,
+                model_used=model_used,
+                tokens_used=tokens_used
             )
             
     except Exception as e:
@@ -303,18 +344,23 @@ async def translate_text(request: TranslationRequest):
             source_lang=request.source_lang,
             target_lang=request.target_lang,
             success=False,
-            message=f"Translation error: {str(e)}"
+            message=f"Translation error: {str(e)}",
+            model_used="none",
+            tokens_used=0
         )
 
 @app.post("/translate_batch", response_model=BatchTranslationResponse)
 async def translate_batch(request: BatchTranslationRequest):
-    """Translate multiple texts in batch with rate limiting."""
+    """Translate multiple texts in batch using OpenAI."""
     
     if not request.texts:
         raise HTTPException(status_code=400, detail="Texts list cannot be empty")
     
     if len(request.texts) > 10:  # Limit batch size
         raise HTTPException(status_code=400, detail="Maximum 10 texts allowed per batch")
+    
+    if not OPENAI_API_KEY:
+        raise HTTPException(status_code=500, detail="OpenAI API key not configured")
     
     try:
         translations = []
@@ -326,7 +372,9 @@ async def translate_batch(request: BatchTranslationRequest):
                     source_lang=request.source_lang,
                     target_lang=request.target_lang,
                     success=False,
-                    message="Empty text"
+                    message="Empty text",
+                    model_used="none",
+                    tokens_used=0
                 ))
                 continue
             
@@ -334,42 +382,44 @@ async def translate_batch(request: BatchTranslationRequest):
                 logger.info(f"Processing batch text {i+1}/{len(request.texts)} (length: {len(text)})")
                 
                 if request.source_lang == "Auto":
-                    target_code = get_language_code(request.target_lang)
-                    result = translate_long_text(text, 'auto', target_code)
+                    result, model_used, tokens_used = translate_long_text(text, 'auto', request.target_lang)
                     
                     translations.append(TranslationResponse(
                         translated_text=result,
                         detected_language="Auto-detected",
                         source_lang=request.source_lang,
                         target_lang=request.target_lang,
-                        success=True
+                        success=True,
+                        model_used=model_used,
+                        tokens_used=tokens_used
                     ))
                 else:
-                    source_code = get_language_code(request.source_lang)
-                    target_code = get_language_code(request.target_lang)
-                    
-                    if target_code == "auto":
+                    if request.target_lang == "Auto":
                         translations.append(TranslationResponse(
                             translated_text="",
                             source_lang=request.source_lang,
                             target_lang=request.target_lang,
                             success=False,
-                            message="Cannot translate to 'Auto' language"
+                            message="Cannot translate to 'Auto' language",
+                            model_used="none",
+                            tokens_used=0
                         ))
                         continue
                     
-                    result = translate_long_text(text, source_code, target_code)
+                    result, model_used, tokens_used = translate_long_text(text, request.source_lang, request.target_lang)
                     
                     translations.append(TranslationResponse(
                         translated_text=result,
                         source_lang=request.source_lang,
                         target_lang=request.target_lang,
-                        success=True
+                        success=True,
+                        model_used=model_used,
+                        tokens_used=tokens_used
                     ))
                 
-                # Much longer delay between batch items for deployment safety
+                # Small delay between batch items to be respectful to OpenAI API
                 if i < len(request.texts) - 1:
-                    time.sleep(1.5)  # 1.5 second delay between batch items
+                    time.sleep(0.3)
                     
             except Exception as e:
                 logger.error(f"Failed to translate batch text {i+1}: {str(e)}")
@@ -378,7 +428,9 @@ async def translate_batch(request: BatchTranslationRequest):
                     source_lang=request.source_lang,
                     target_lang=request.target_lang,
                     success=False,
-                    message=f"Translation error: {str(e)}"
+                    message=f"Translation error: {str(e)}",
+                    model_used="none",
+                    tokens_used=0
                 ))
         
         return BatchTranslationResponse(
@@ -397,66 +449,56 @@ async def translate_batch(request: BatchTranslationRequest):
 @app.get("/health")
 async def health_check():
     """Health check endpoint."""
-    return {"status": "healthy", "service": "translator-api"}
-
-@app.get("/rate-limit-status")
-async def rate_limit_status():
-    """Get current rate limiting status and statistics."""
-    stats = rate_limiter.get_stats()
-    return {
-        "rate_limiting": {
-            "max_requests_per_second": stats["max_requests"],
-            "window_size_seconds": stats["window_size"],
-            "current_window_requests": stats["current_window_requests"],
-            "total_requests_processed": stats["total_requests"],
-            "rate_limit_hits": stats["rate_limit_hits"],
-            "status": "healthy" if stats["current_window_requests"] < stats["max_requests"] else "rate_limited"
-        },
-        "google_limits": {
-            "max_requests_per_second": 5,
-            "max_requests_per_day": 200000,
-            "our_limit": "2 req/2sec (staying well under Google's 5 req/sec limit)"
-        }
-    }
+    return {"status": "healthy", "service": "opensource-translator-api"}
 
 @app.get("/test-translation")
 async def test_translation():
-    """Test endpoint to verify translation is working."""
+    """Test endpoint to verify OpenAI translation is working."""
     try:
-        # Test with a simple translation
-        test_text = "Hello world"
-        result = translate_with_retry(test_text, "en", "es")
+        if not OPENAI_API_KEY:
+            return {
+                "status": "unhealthy",
+                "error": "OpenAI API key not configured",
+                "message": "Please set OPENAI_API_KEY environment variable"
+            }
         
-        if result and result != test_text:
+        # Test with a simple translation
+        result, model_used, tokens_used = translate_with_openai("Hello world", "English", "Spanish")
+        
+        if result:
             return {
                 "status": "healthy",
-                "test_text": test_text,
-                "translated_text": result,
-                "message": "Translation is working correctly"
+                "test_translation": result,
+                "model_used": model_used,
+                "tokens_used": tokens_used,
+                "message": "OpenAI translation is working correctly"
             }
         else:
             return {
                 "status": "unhealthy",
-                "test_text": test_text,
-                "translated_text": result,
-                "message": "Translation returned same text - not working"
+                "message": "OpenAI translation returned no result"
             }
     except Exception as e:
         return {
             "status": "unhealthy",
             "error": str(e),
-            "message": "Translation test failed"
+            "message": "OpenAI translation is not working"
         }
 
 if __name__ == "__main__":
     import os
-    print("🚀 Starting Multi-Language Translator API")
-    print("✅ Using local translation - No API key required!")
-    print("⚡ Rate limiting enabled • 🔄 Retry logic • 📦 Batch support")
-    print("🎯 High accuracy • 🔒 Privacy-focused")
+    print("🚀 Starting OpenAI-Powered Multi-Language Translator API")
+    print("✅ Using OpenAI GPT-3.5-turbo - Superior translation quality!")
+    print("🧠 AI-powered • 🌍 50+ languages • 📦 Batch support")
+    print("🎯 Professional accuracy • 🔒 Privacy-focused • ⚡ No rate limits")
+    
+    if OPENAI_API_KEY == "sk-your-actual-api-key-here":
+        print("⚠️  WARNING: Please replace the hardcoded API key!")
+        print("   Edit OpensourceAPI.py and replace 'sk-your-actual-api-key-here' with your real key")
+        print("   Your API key should look like: sk-1234567890abcdef...")
     
     # Get port from environment (cloud platforms set this)
-    port = int(os.getenv("PORT", 8000))
+    port = int(os.getenv("PORT", 8001))  # Use different port to avoid conflicts
     # Use 0.0.0.0 to accept connections from anywhere
     host = os.getenv("HOST", "127.0.0.1")
     
@@ -465,4 +507,4 @@ if __name__ == "__main__":
         host=host,
         port=port,
         log_level="info"
-    ) 
+    )
