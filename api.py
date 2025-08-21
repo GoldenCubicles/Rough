@@ -3,6 +3,10 @@ from pydantic import BaseModel
 from deep_translator import GoogleTranslator
 from languages import get_language_code, get_language_name, get_supported_languages
 import uvicorn
+import os
+import asyncio
+import time
+import random
 
 app = FastAPI(
     title="Multi-Language Translator API",
@@ -22,6 +26,56 @@ class TranslationResponse(BaseModel):
     target_lang: str
     success: bool
     message: str = None
+
+# ---------------- Rate limit + retry logic ----------------
+# Google unofficial endpoint is rate-limited. Apply a conservative
+# per-process rate limit and retry on throttling errors.
+RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "4"))  # allowed requests per second
+_MIN_INTERVAL_SECONDS = 1.0 / max(RATE_LIMIT_RPS, 0.1)
+_last_request_time: float = 0.0
+_rate_lock = asyncio.Lock()
+
+
+async def _wait_for_client_rate_limit() -> None:
+    global _last_request_time
+    async with _rate_lock:
+        now = time.monotonic()
+        elapsed = now - _last_request_time
+        if elapsed < _MIN_INTERVAL_SECONDS:
+            await asyncio.sleep(_MIN_INTERVAL_SECONDS - elapsed)
+        _last_request_time = time.monotonic()
+
+
+def _looks_like_rate_limited(error_message: str) -> bool:
+    msg = (error_message or "").lower()
+    indicators = [
+        "too many requests",
+        "429",
+        "rate limit",
+        "you made too many requests",
+        "server error",
+    ]
+    return any(k in msg for k in indicators)
+
+
+async def _translate_with_retry(text: str, source_code: str, target_code: str) -> str:
+    max_attempts = int(os.getenv("TRANSLATE_MAX_ATTEMPTS", "5"))
+    base_delay = float(os.getenv("TRANSLATE_BACKOFF_SECONDS", "0.5"))
+
+    attempt = 0
+    while True:
+        attempt += 1
+        await _wait_for_client_rate_limit()
+        try:
+            translator = GoogleTranslator(source=source_code, target=target_code)
+            return translator.translate(text)
+        except Exception as e:
+            if attempt < max_attempts and _looks_like_rate_limited(str(e)):
+                backoff = base_delay * (2 ** (attempt - 1))
+                jitter = random.uniform(0, base_delay)
+                await asyncio.sleep(backoff + jitter)
+                continue
+            raise
 
 @app.get("/")
 async def root():
@@ -57,13 +111,8 @@ async def translate_text(request: TranslationRequest):
     try:
         # Handle auto-detection
         if request.source_lang == "Auto":
-            # For auto-detection, we'll use Google's auto-detection
             target_code = get_language_code(request.target_lang)
-            
-            # Use Google Translator with auto-detection
-            translator = GoogleTranslator(source='auto', target=target_code)
-            result = translator.translate(request.text)
-            
+            result = await _translate_with_retry(request.text, "auto", target_code)
             return TranslationResponse(
                 translated_text=result,
                 detected_language="Auto-detected",
@@ -80,9 +129,8 @@ async def translate_text(request: TranslationRequest):
             if target_code == "auto":
                 raise HTTPException(status_code=400, detail="Cannot translate to 'Auto' language")
             
-            # Perform translation
-            translator = GoogleTranslator(source=source_code, target=target_code)
-            result = translator.translate(request.text)
+            # Perform translation with retries
+            result = await _translate_with_retry(request.text, source_code, target_code)
             
             return TranslationResponse(
                 translated_text=result,
