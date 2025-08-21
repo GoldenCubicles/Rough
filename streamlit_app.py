@@ -6,9 +6,9 @@ from typing import Optional, List
 import os
 
 # Configuration
-API_BASE_URL = "https://rough-1-8qyx.onrender.com"
+#API_BASE_URL = "https://rough-1-8qyx.onrender.com"
 # Normalize base URL to avoid double slashes when joining paths
-# API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip('/')
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip('/')
 
 # Page configuration
 st.set_page_config(
@@ -150,10 +150,20 @@ def translate_batch(texts: List[str], source_lang: str, target_lang: str) -> Opt
         st.error(f"Unexpected Error: {str(e)}")
         return None
 
+def get_rate_limit_status() -> Optional[dict]:
+    """Get rate limiting status from the API."""
+    try:
+        response = requests.get(f"{API_BASE_URL}/rate-limit-status", timeout=10)
+        if response.status_code == 200:
+            return response.json()
+        return None
+    except:
+        return None
+
 def main():
     # Header
     st.markdown('<h1 class="main-header">🌍 Multi-Language Translator</h1>', unsafe_allow_html=True)
-    st.markdown('<p class="sub-header">High-accuracy translation using local Google Translate engine with rate limiting</p>', unsafe_allow_html=True)
+    st.markdown('<p class="sub-header">High-accuracy translation using local Google Translate engine with intelligent rate limiting</p>', unsafe_allow_html=True)
     
     # Check API health
     if not check_api_health():
@@ -172,12 +182,27 @@ def main():
     
     st.success("✅ **API Connected Successfully**")
     
+    # Rate limiting info and status
+    rate_status = get_rate_limit_status()
+    if rate_status:
+        rate_info = rate_status.get("rate_limiting", {})
+        status_color = "🟢" if rate_info.get("status") == "healthy" else "🟡"
+        
+        col1, col2, col3 = st.columns([1, 1, 1])
+        with col1:
+            st.metric("Rate Limit Status", f"{status_color} {rate_info.get('status', 'unknown').title()}")
+        with col2:
+            st.metric("Current Requests", f"{rate_info.get('current_window_requests', 0)}/4")
+        with col3:
+            st.metric("Total Processed", rate_info.get('total_requests_processed', 0))
+    
     # Rate limiting info
     st.markdown("""
     <div class="warning-box">
         <h4>⚠️ Rate Limiting Notice</h4>
         <p>This API uses Google Translate which has rate limits: <strong>5 requests per second</strong> and <strong>200k requests per day</strong>.</p>
-        <p>If you hit rate limits, the API will automatically retry with exponential backoff. For multiple texts, use the batch translation feature.</p>
+        <p>Our API automatically stays under these limits and handles long texts by splitting them into smaller chunks.</p>
+        <p><strong>💡 Tip:</strong> For very long texts, the API will automatically split them and translate each part sequentially.</p>
     </div>
     """, unsafe_allow_html=True)
     
