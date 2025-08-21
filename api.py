@@ -1,32 +1,17 @@
 from fastapi import FastAPI, HTTPException
-from fastapi.middleware.cors import CORSMiddleware   # 👈 Add this
 from pydantic import BaseModel
-from deep_translator import GoogleTranslator
-from languages import get_language_code, get_language_name, get_supported_languages
+from deep_translator import LibreTranslator
+from languages import get_language_code, get_supported_languages
 import uvicorn
 import os
-import asyncio
-import time
-import random
 
 app = FastAPI(
     title="Multi-Language Translator API",
-    description="High-accuracy translation API using local Google Translate engine",
-    version="1.0.0"
+    description="Free translation API using LibreTranslate (no rate limits like Google)",
+    version="2.0.0"
 )
 
-# ---------------- CORS FIX ----------------
-# Allow frontend (Streamlit/React) to call the API
-# For testing: allow all (*) — later restrict to your domain for security
-app.add_middleware(
-    CORSMiddleware,
-    allow_origins=["*"],  # 👈 You can replace "*" with ["http://localhost:3000", "https://yourfrontend.com"]
-    allow_credentials=True,
-    allow_methods=["*"],
-    allow_headers=["*"],
-)
-# ------------------------------------------
-
+# ---------------- Request / Response Models ----------------
 class TranslationRequest(BaseModel):
     text: str
     source_lang: str = "Auto"
@@ -40,137 +25,92 @@ class TranslationResponse(BaseModel):
     success: bool
     message: str = None
 
-# ---------------- Rate limit + retry logic ----------------
-RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "4"))  # allowed requests per second
-_MIN_INTERVAL_SECONDS = 1.0 / max(RATE_LIMIT_RPS, 0.1)
-_last_request_time: float = 0.0
-_rate_lock = asyncio.Lock()
+
+# ---------------- Helper Function ----------------
+def translate_text_libre(text: str, source: str, target: str):
+    """
+    Translate text using LibreTranslate public API.
+    """
+    try:
+        translator = LibreTranslator(
+            source=source,
+            target=target,
+            base_url="https://libretranslate.de"  # public free instance
+        )
+        return translator.translate(text)
+    except Exception as e:
+        raise RuntimeError(f"LibreTranslate error: {str(e)}")
 
 
-async def _wait_for_client_rate_limit() -> None:
-    global _last_request_time
-    async with _rate_lock:
-        now = time.monotonic()
-        elapsed = now - _last_request_time
-        if elapsed < _MIN_INTERVAL_SECONDS:
-            await asyncio.sleep(_MIN_INTERVAL_SECONDS - elapsed)
-        _last_request_time = time.monotonic()
-
-
-def _looks_like_rate_limited(error_message: str) -> bool:
-    msg = (error_message or "").lower()
-    indicators = [
-        "too many requests",
-        "429",
-        "rate limit",
-        "you made too many requests",
-        "server error",
-    ]
-    return any(k in msg for k in indicators)
-
-
-async def _translate_with_retry(text: str, source_code: str, target_code: str) -> str:
-    max_attempts = int(os.getenv("TRANSLATE_MAX_ATTEMPTS", "5"))
-    base_delay = float(os.getenv("TRANSLATE_BACKOFF_SECONDS", "0.5"))
-
-    attempt = 0
-    while True:
-        attempt += 1
-        await _wait_for_client_rate_limit()
-        try:
-            translator = GoogleTranslator(source=source_code, target=target_code)
-            return translator.translate(text)
-        except Exception as e:
-            if attempt < max_attempts and _looks_like_rate_limited(str(e)):
-                backoff = base_delay * (2 ** (attempt - 1))
-                jitter = random.uniform(0, base_delay)
-                await asyncio.sleep(backoff + jitter)
-                continue
-            raise
-
+# ---------------- Routes ----------------
 @app.get("/")
 async def root():
-    """Root endpoint with API information."""
     return {
         "message": "Multi-Language Translator API",
-        "version": "1.0.0",
-        "description": "High-accuracy translation using local Google Translate engine",
+        "version": "2.0.0",
+        "description": "Free translation using LibreTranslate backend (no API key required!)",
         "features": [
-            "Zero latency",
-            "High accuracy", 
+            "Free & open-source",
+            "No Google rate limits",
             "Privacy-focused",
-            "Works offline",
-            "25+ languages supported"
+            "Works with 20+ languages",
         ]
     }
 
 @app.get("/languages")
 async def get_languages():
-    """Get all supported languages."""
     return {
         "languages": get_supported_languages(),
         "count": len(get_supported_languages())
     }
 
 @app.post("/translate", response_model=TranslationResponse)
-async def translate_text(request: TranslationRequest):
-    """Translate text between languages."""
-    
+async def translate(request: TranslationRequest):
     if not request.text.strip():
         raise HTTPException(status_code=400, detail="Text cannot be empty")
-    
+
     try:
-        # Handle auto-detection
+        # Map language names to codes
         if request.source_lang == "Auto":
-            target_code = get_language_code(request.target_lang)
-            result = await _translate_with_retry(request.text, "auto", target_code)
-            return TranslationResponse(
-                translated_text=result,
-                detected_language="Auto-detected",
-                source_lang=request.source_lang,
-                target_lang=request.target_lang,
-                success=True
-            )
+            source_code = "auto"
         else:
-            # Get language codes
             source_code = get_language_code(request.source_lang)
-            target_code = get_language_code(request.target_lang)
-            
-            # Validate languages
-            if target_code == "auto":
-                raise HTTPException(status_code=400, detail="Cannot translate to 'Auto' language")
-            
-            # Perform translation with retries
-            result = await _translate_with_retry(request.text, source_code, target_code)
-            
-            return TranslationResponse(
-                translated_text=result,
-                source_lang=request.source_lang,
-                target_lang=request.target_lang,
-                success=True
-            )
-            
+
+        target_code = get_language_code(request.target_lang)
+
+        if target_code == "auto":
+            raise HTTPException(status_code=400, detail="Cannot translate to 'Auto' language")
+
+        # Perform translation
+        result = translate_text_libre(request.text, source_code, target_code)
+
+        return TranslationResponse(
+            translated_text=result,
+            detected_language="Auto-detected" if request.source_lang == "Auto" else request.source_lang,
+            source_lang=request.source_lang,
+            target_lang=request.target_lang,
+            success=True
+        )
     except Exception as e:
         return TranslationResponse(
             translated_text="",
             source_lang=request.source_lang,
             target_lang=request.target_lang,
             success=False,
-            message=f"Translation error: {str(e)}"
+            message=str(e)
         )
 
 @app.get("/health")
 async def health_check():
-    """Health check endpoint."""
     return {"status": "healthy", "service": "translator-api"}
 
+
+# ---------------- Entrypoint ----------------
 if __name__ == "__main__":
-    print("🚀 Starting Multi-Language Translator API")
-    print("✅ Using local translation - No API key required!")
-    print("⚡ Zero latency • 🎯 High accuracy • 🔒 Privacy-focused")
-    
+    print("🚀 Starting Multi-Language Translator API (LibreTranslate backend)")
     port = int(os.getenv("PORT", 8000))
-    host = os.getenv("HOST", "127.0.0.1")  # 👈 change to "0.0.0.0" on deployment
+    host = os.getenv("HOST", "127.0.0.1")
+    
     uvicorn.run(
         app,
         host=host,
