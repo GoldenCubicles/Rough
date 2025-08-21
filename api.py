@@ -12,9 +12,9 @@ import logging
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger(__name__)
 
-# Rate limiting configuration - make it less aggressive for single users
-RATE_LIMIT_REQUESTS = 4  # Stay under Google's 5 req/sec limit
-RATE_LIMIT_WINDOW = 1.0  # 1 second window
+# Rate limiting configuration - make it much less aggressive for deployment
+RATE_LIMIT_REQUESTS = 2  # Stay well under Google's 5 req/sec limit
+RATE_LIMIT_WINDOW = 2.0  # 2 second window for more safety
 
 # Add a more flexible rate limiting approach
 import threading
@@ -69,8 +69,8 @@ class RateLimiter:
                 "window_size": self.window_size
             }
 
-# Create a global rate limiter instance - make it less aggressive
-rate_limiter = RateLimiter(max_requests=4, window_size=1.0)
+# Create a global rate limiter instance - make it much less aggressive for deployment
+rate_limiter = RateLimiter(max_requests=2, window_size=2.0)
 
 def rate_limit():
     """Implement rate limiting to stay under Google's 5 req/sec limit."""
@@ -187,9 +187,9 @@ def translate_long_text(text: str, source_code: str, target_code: str) -> str:
                 else:
                     raise Exception(f"Failed to translate chunk {i+1}: returned same text")
             
-            # Small delay between chunks to be extra safe with rate limiting
+            # Much longer delay between chunks for deployment safety
             if i < len(chunks) - 1:
-                time.sleep(0.3)
+                time.sleep(1.0)  # 1 second delay between chunks
                 
         except Exception as e:
             logger.error(f"Failed to translate chunk {i+1}: {str(e)}")
@@ -367,9 +367,9 @@ async def translate_batch(request: BatchTranslationRequest):
                         success=True
                     ))
                 
-                # Small delay between batch items to be extra safe with rate limiting
+                # Much longer delay between batch items for deployment safety
                 if i < len(request.texts) - 1:
-                    time.sleep(0.3)
+                    time.sleep(1.5)  # 1.5 second delay between batch items
                     
             except Exception as e:
                 logger.error(f"Failed to translate batch text {i+1}: {str(e)}")
@@ -415,7 +415,7 @@ async def rate_limit_status():
         "google_limits": {
             "max_requests_per_second": 5,
             "max_requests_per_day": 200000,
-            "our_limit": "4 req/sec (staying under Google's 5 req/sec limit)"
+            "our_limit": "2 req/2sec (staying well under Google's 5 req/sec limit)"
         }
     }
 
