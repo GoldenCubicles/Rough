@@ -1,4 +1,5 @@
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.cors import CORSMiddleware   # 👈 Add this
 from pydantic import BaseModel
 from deep_translator import GoogleTranslator
 from languages import get_language_code, get_language_name, get_supported_languages
@@ -14,6 +15,18 @@ app = FastAPI(
     version="1.0.0"
 )
 
+# ---------------- CORS FIX ----------------
+# Allow frontend (Streamlit/React) to call the API
+# For testing: allow all (*) — later restrict to your domain for security
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["*"],  # 👈 You can replace "*" with ["http://localhost:3000", "https://yourfrontend.com"]
+    allow_credentials=True,
+    allow_methods=["*"],
+    allow_headers=["*"],
+)
+# ------------------------------------------
+
 class TranslationRequest(BaseModel):
     text: str
     source_lang: str = "Auto"
@@ -28,8 +41,6 @@ class TranslationResponse(BaseModel):
     message: str = None
 
 # ---------------- Rate limit + retry logic ----------------
-# Google unofficial endpoint is rate-limited. Apply a conservative
-# per-process rate limit and retry on throttling errors.
 RATE_LIMIT_RPS = float(os.getenv("RATE_LIMIT_RPS", "4"))  # allowed requests per second
 _MIN_INTERVAL_SECONDS = 1.0 / max(RATE_LIMIT_RPS, 0.1)
 _last_request_time: float = 0.0
@@ -154,19 +165,15 @@ async def health_check():
     return {"status": "healthy", "service": "translator-api"}
 
 if __name__ == "__main__":
-    import os
     print("🚀 Starting Multi-Language Translator API")
     print("✅ Using local translation - No API key required!")
     print("⚡ Zero latency • 🎯 High accuracy • 🔒 Privacy-focused")
     
-    # Get port from environment (cloud platforms set this)
     port = int(os.getenv("PORT", 8000))
-    # Use 0.0.0.0 to accept connections from anywhere
-    host = os.getenv("HOST", "127.0.0.1")
-    
+    host = os.getenv("HOST", "127.0.0.1")  # 👈 change to "0.0.0.0" on deployment
     uvicorn.run(
         app,
         host=host,
         port=port,
         log_level="info"
-    ) 
+    )
