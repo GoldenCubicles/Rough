@@ -7,6 +7,7 @@ import time
 from typing import List, Optional
 from collections import deque
 from threading import Lock
+import asyncio
 
 app = FastAPI(
     title="Multi-Language Translator API",
@@ -51,7 +52,8 @@ RATE_LIMIT_REQUESTS_PER_SECOND = 1  # extra conservative under Google's 5 rps
 _recent_request_times = deque()
 _rate_lock = Lock()
 _total_requests_processed = 0
-CHUNK_PACE_SECONDS = 0.6  # delay between sequential chunk calls
+CHUNK_PACE_SECONDS = 1.0  # delay between sequential chunk calls
+_translate_lock = asyncio.Lock()  # serialize translations within this process
 
 def _enforce_rate_limit():
     global _total_requests_processed
@@ -159,11 +161,12 @@ async def translate_text(request: TranslationRequest):
         # Chunk long texts to respect limits, then concatenate
         chunks = _split_text_into_chunks(request.text)
         translated_parts: List[str] = []
-        for chunk in chunks:
-            translated = _translate_single(chunk, source_code, target_code)
-            translated_parts.append(translated)
-            # Pace consecutive calls to avoid shared-IP spikes
-            time.sleep(CHUNK_PACE_SECONDS)
+        async with _translate_lock:
+            for chunk in chunks:
+                translated = _translate_single(chunk, source_code, target_code)
+                translated_parts.append(translated)
+                # Pace consecutive calls to avoid shared-IP spikes
+                time.sleep(CHUNK_PACE_SECONDS)
 
         result_text = "\n\n".join(translated_parts)
 
@@ -216,19 +219,20 @@ async def translate_batch(request: BatchTranslationRequest):
             raise HTTPException(status_code=400, detail="Cannot translate to 'Auto' language")
 
         translations: List[BatchItemResponse] = []
-        for text in request.texts:
-            if not text.strip():
-                translations.append(BatchItemResponse(translated_text="", success=False, message="Empty text"))
-                continue
-            try:
-                parts = _split_text_into_chunks(text)
-                out_segments: List[str] = []
-                for part in parts:
-                    out_segments.append(_translate_single(part, source_code, target_code))
-                    time.sleep(CHUNK_PACE_SECONDS)
-                translations.append(BatchItemResponse(translated_text="\n\n".join(out_segments), success=True))
-            except Exception as exc:
-                translations.append(BatchItemResponse(translated_text="", success=False, message=str(exc)))
+        async with _translate_lock:
+            for text in request.texts:
+                if not text.strip():
+                    translations.append(BatchItemResponse(translated_text="", success=False, message="Empty text"))
+                    continue
+                try:
+                    parts = _split_text_into_chunks(text)
+                    out_segments: List[str] = []
+                    for part in parts:
+                        out_segments.append(_translate_single(part, source_code, target_code))
+                        time.sleep(CHUNK_PACE_SECONDS)
+                    translations.append(BatchItemResponse(translated_text="\n\n".join(out_segments), success=True))
+                except Exception as exc:
+                    translations.append(BatchItemResponse(translated_text="", success=False, message=str(exc)))
 
         success_overall = any(item.success for item in translations)
         return BatchTranslationResponse(
