@@ -77,6 +77,12 @@ st.markdown("""
 # API Configuration
 GEMINI_API_BASE_URL = "http://127.0.0.1:8002"  # Default Gemini API URL
 
+def get_api_base_url() -> str:
+    try:
+        return st.session_state.get("gemini_api_base_url", GEMINI_API_BASE_URL)
+    except Exception:
+        return GEMINI_API_BASE_URL
+
 # Initialize session state
 if 'translation_history' not in st.session_state:
     st.session_state.translation_history = []
@@ -86,7 +92,7 @@ if 'api_status' not in st.session_state:
 def check_api_health():
     """Check if the Gemini API is running."""
     try:
-        response = requests.get(f"{GEMINI_API_BASE_URL}/health", timeout=5)
+        response = requests.get(f"{get_api_base_url()}/health", timeout=5)
         if response.status_code == 200:
             st.session_state.api_status = "healthy"
             return True
@@ -100,7 +106,7 @@ def check_api_health():
 def get_rate_limit_status():
     """Get current rate limit status from Gemini API."""
     try:
-        response = requests.get(f"{GEMINI_API_BASE_URL}/rate-limit-status", timeout=5)
+        response = requests.get(f"{get_api_base_url()}/rate-limit-status", timeout=5)
         if response.status_code == 200:
             return response.json()
         else:
@@ -111,7 +117,7 @@ def get_rate_limit_status():
 def get_supported_languages():
     """Get supported languages from Gemini API."""
     try:
-        response = requests.get(f"{GEMINI_API_BASE_URL}/languages", timeout=5)
+        response = requests.get(f"{get_api_base_url()}/languages", timeout=5)
         if response.status_code == 200:
             return response.json()["languages"]
         else:
@@ -129,7 +135,7 @@ def translate_text(text, source_lang, target_lang):
         }
         
         response = requests.post(
-            f"{GEMINI_API_BASE_URL}/translate",
+            f"{get_api_base_url()}/translate",
             json=payload,
             timeout=30
         )
@@ -157,12 +163,12 @@ def main():
         # API URL configuration
         api_url = st.text_input(
             "Gemini API URL",
-            value=GEMINI_API_BASE_URL,
+            value=get_api_base_url(),
             help="URL of your Gemini API server"
         )
         
-        if api_url != GEMINI_API_BASE_URL:
-            GEMINI_API_BASE_URL = api_url
+        if api_url and api_url != get_api_base_url():
+            st.session_state["gemini_api_base_url"] = api_url
         
         # API Status
         st.subheader("🔍 API Status")

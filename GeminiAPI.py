@@ -59,10 +59,11 @@ class RateLimiter:
 rate_limiter = RateLimiter(max_requests_per_minute=10, max_requests_per_day=1000)
 
 # Gemini Configuration
-GEMINI_API_KEY = "AIzaSyAjQL3OMn2QwsL-c8yNLWu-QhizPZ3dJ7Y"  # Your actual API key
-GEMINI_MODEL = "gemini-1.0-pro"  # Using the more generous free tier model
+GEMINI_API_KEY = os.getenv("GEMINI_API_KEY", "AIzaSyAjQL3OMn2QwsL-c8yNLWu-QhizPZ3dJ7Y")
+# Default to a current, widely available model; allow override via ENV
+GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-1.5-flash")
 GEMINI_CONFIG = {
-    "temperature": 0.3,  # Lower temperature for more consistent translations
+    "temperature": 0.3,  # Lower temperature for more consistent tsranslations
     "top_p": 0.8,
     "top_k": 40,
     "max_output_tokens": 2048,
