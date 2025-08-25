@@ -7,9 +7,9 @@ import os
 
 # Configuration
 # API_BASE_URL = "https://rough-1-8qyx.onrender.com"
-API_BASE_URL = "http://127.0.0.1:8001"
+# API_BASE_URL = "http://127.0.0.1:8001"
 # Normalize base URL to avoid double slashes when joining paths
-# API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip('/')
+API_BASE_URL = os.getenv("API_BASE_URL", "http://127.0.0.1:8000").rstrip('/')
 
 # Page configuration
 st.set_page_config(
