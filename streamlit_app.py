@@ -107,7 +107,7 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Optional[di
         response = requests.post(
             f"{API_BASE_URL}/translate",
             json=payload,
-            timeout=60  # Increased timeout for rate-limited requests
+            timeout=(10, 180)  # (connect, read) timeouts extended for long texts
         )
         
         if response.status_code == 200:
@@ -116,6 +116,9 @@ def translate_text(text: str, source_lang: str, target_lang: str) -> Optional[di
             st.error(f"API Error: {response.status_code} - {response.text}")
             return None
             
+    except requests.exceptions.ReadTimeout as e:
+        st.error("Connection Error: The request took too long and timed out. Try Batch mode or shorter input.")
+        return None
     except requests.exceptions.RequestException as e:
         st.error(f"Connection Error: {str(e)}")
         return None
@@ -135,7 +138,7 @@ def translate_batch(texts: List[str], source_lang: str, target_lang: str) -> Opt
         response = requests.post(
             f"{API_BASE_URL}/translate_batch",
             json=payload,
-            timeout=120  # Longer timeout for batch requests
+            timeout=(10, 240)  # (connect, read) timeouts for batch requests
         )
         
         if response.status_code == 200:
@@ -144,6 +147,9 @@ def translate_batch(texts: List[str], source_lang: str, target_lang: str) -> Opt
             st.error(f"Batch API Error: {response.status_code} - {response.text}")
             return None
             
+    except requests.exceptions.ReadTimeout as e:
+        st.error("Connection Error: Batch request timed out. Reduce number of lines or try again.")
+        return None
     except requests.exceptions.RequestException as e:
         st.error(f"Connection Error: {str(e)}")
         return None

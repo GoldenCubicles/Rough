@@ -47,10 +47,11 @@ class BatchTranslationResponse(BaseModel):
 # -----------------------------
 # Simple server-side rate limiter
 # -----------------------------
-RATE_LIMIT_REQUESTS_PER_SECOND = 2  # extra conservative under Google's 5 rps
+RATE_LIMIT_REQUESTS_PER_SECOND = 1  # extra conservative under Google's 5 rps
 _recent_request_times = deque()
 _rate_lock = Lock()
 _total_requests_processed = 0
+CHUNK_PACE_SECONDS = 0.6  # delay between sequential chunk calls
 
 def _enforce_rate_limit():
     global _total_requests_processed
@@ -161,6 +162,8 @@ async def translate_text(request: TranslationRequest):
         for chunk in chunks:
             translated = _translate_single(chunk, source_code, target_code)
             translated_parts.append(translated)
+            # Pace consecutive calls to avoid shared-IP spikes
+            time.sleep(CHUNK_PACE_SECONDS)
 
         result_text = "\n\n".join(translated_parts)
 
@@ -222,6 +225,7 @@ async def translate_batch(request: BatchTranslationRequest):
                 out_segments: List[str] = []
                 for part in parts:
                     out_segments.append(_translate_single(part, source_code, target_code))
+                    time.sleep(CHUNK_PACE_SECONDS)
                 translations.append(BatchItemResponse(translated_text="\n\n".join(out_segments), success=True))
             except Exception as exc:
                 translations.append(BatchItemResponse(translated_text="", success=False, message=str(exc)))
