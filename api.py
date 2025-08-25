@@ -47,7 +47,7 @@ class BatchTranslationResponse(BaseModel):
 # -----------------------------
 # Simple server-side rate limiter
 # -----------------------------
-RATE_LIMIT_REQUESTS_PER_SECOND = 4  # stay under Google's 5 rps
+RATE_LIMIT_REQUESTS_PER_SECOND = 2  # extra conservative under Google's 5 rps
 _recent_request_times = deque()
 _rate_lock = Lock()
 _total_requests_processed = 0
@@ -97,10 +97,10 @@ def _split_text_into_chunks(text: str, max_len: int = 4500) -> List[str]:
         chunks.append(current)
     return chunks
 
-def _translate_single(text: str, source_code: str, target_code: str, max_retries: int = 3) -> str:
+def _translate_single(text: str, source_code: str, target_code: str, max_retries: int = 6) -> str:
     # Retry with exponential backoff on transient errors / rate limits
     attempt = 0
-    backoff = 0.75
+    backoff = 1.0
     while True:
         try:
             _enforce_rate_limit()
@@ -110,7 +110,7 @@ def _translate_single(text: str, source_code: str, target_code: str, max_retries
             attempt += 1
             message = str(exc).lower()
             transient = any(key in message for key in [
-                "too many requests", "429", "temporarily unavailable", "timeout", "server error"
+                "too many requests", "429", "temporarily unavailable", "timeout", "server error", "quota", "limit"
             ])
             if attempt <= max_retries and transient:
                 time.sleep(backoff)
